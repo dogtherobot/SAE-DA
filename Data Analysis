@@ -1,0 +1,18 @@
+import pandas as pd  
+import os
+
+EGroups_raw = {}
+folder_path = r'C:\Users\cntur\Downloads\Endurance csv groups'
+files = os.listdir(folder_path)
+
+for file_name in files:
+    df = pd.read_csv(f'{folder_path}\\{file_name}')
+    keys = tuple(list(df.columns))
+    print(file_name+'_')
+    for key in keys:
+        print(key)
+    if keys not in EGroups_raw:
+        EGroups_raw[keys] = []
+    EGroups_raw[keys].append(file_name.split('__')[0])
+
+#print(EGroups_raw)
