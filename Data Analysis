@@ -1,5 +1,6 @@
 import pandas as pd  
 import os
+import matplotlib.pyplot as plt
 
 EGroups_raw = {}
 folder_path = r'C:\Users\cntur\Downloads\Endurance csv groups'
@@ -7,12 +8,50 @@ files = os.listdir(folder_path)
 
 for file_name in files:
     df = pd.read_csv(f'{folder_path}\\{file_name}')
-    keys = tuple(list(df.columns))
-    print(file_name+'_')
+    keys = list(df.columns)[1:]
+    m_keys = []
     for key in keys:
-        print(key)
-    if keys not in EGroups_raw:
-        EGroups_raw[keys] = []
-    EGroups_raw[keys].append(file_name.split('__')[0])
+        if key.isalpha() == False and key[-3:].isnumeric() == True:
+            m_key = key[:-3]
+        else:
+            m_key = key
+        m_keys.append(m_key)
+    m_keys = tuple(m_keys)
+    if m_keys not in EGroups_raw:
+        EGroups_raw[m_keys] = []
+    EGroups_raw[m_keys].append(file_name)
+class BMS:
+    def __init__(self, df):
+        self.df = df
+        self.temps = bms
+        self.dependents = dependents
+BMS_list = []
+file_paths = EGroups_raw[('BMS_PackPower', 'BMS_PackEnergyOut', 'BMS_PackClosedVoltage', 'BMS_PackCurrent')]
+for file_path in file_paths:
+    BMS_list.append(pd.read_csv(f'{folder_path}\\{file_path}'))
 
-#print(EGroups_raw)
+
+for keys, files in EGroups_raw.items():
+    break
+    for file in files:
+        pack_d = {}
+        dep_d = {}
+        df = pd.read_csv(f'{folder_path}\\{file}')
+        for key in df.keys():
+            if 'time' in key:
+                continue
+            if 'BMS' in key:
+                pack_d[key] = []
+            else:
+                dep_d[key] = []
+        if pack_d == {}:
+            continue
+        for key in pack_d:
+            pack_d[key] = df[key]
+        if dep_d != {}:
+            for key in dep_d:
+                dep_d[key] = df[key]
+        if pack_d != {}:
+            BMS_list.append(BMS(df['timestamps'], pack_d, dep_d))
+            df.plot(kind='line', x='timestamps')
+            plt.show() #AVG, 
