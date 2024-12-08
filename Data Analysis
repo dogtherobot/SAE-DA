@@ -1,11 +1,17 @@
 import pandas as pd  
 import os
 import matplotlib.pyplot as plt
+import numpy as np
+from scipy.integrate import cumtrapz
 
 EGroups_raw = {}
 folder_path = r'C:\Users\cntur\Downloads\Endurance csv groups'
 files = os.listdir(folder_path)
 
+ratio_d = {'E':['P*t']}
+masses = {'224e':10.88*453.59237,'225e':9.51*453.59237,'3p e':10**4*3,'cell':126}
+R=3.5 * 10**-3 #ohm
+c = 1.4 #J/(g*C)
 for file_name in files:
     df = pd.read_csv(f'{folder_path}\\{file_name}')
     keys = list(df.columns)[1:]
@@ -23,35 +29,32 @@ for file_name in files:
 class BMS:
     def __init__(self, df):
         self.df = df
-        self.temps = bms
-        self.dependents = dependents
+        self.time = np.array(self.df['timestamps'].to_list())
+        self.keys = list(self.df.keys())
+        self.data = {}
+        for key in self.keys:
+            if 'Pack' in key:
+                key_l = key.split('Pack')
+                if key_l[1] in ['Power', 'EnergyOut']:
+                    self.data[key_l[1][0]] =np.array(self.df[key].to_list())
+                else:
+                    if key_l[1][6] == 'V':
+                        self.data['V'] = np.array(self.df[key].to_list())
+                    else:
+                        self.data['I'] = np.array(self.df[key].to_list())
+        self.data['P_T'] = self.data['I']**2 *R
+        self.data['E_T'] = cumtrapz(self.data['P_T'],self.time,initial=0)
+        self.temp = self.data['E_T']/(masses['cell']*1.4)
+            
 BMS_list = []
 file_paths = EGroups_raw[('BMS_PackPower', 'BMS_PackEnergyOut', 'BMS_PackClosedVoltage', 'BMS_PackCurrent')]
 for file_path in file_paths:
-    BMS_list.append(pd.read_csv(f'{folder_path}\\{file_path}'))
-
-
-for keys, files in EGroups_raw.items():
-    break
-    for file in files:
-        pack_d = {}
-        dep_d = {}
-        df = pd.read_csv(f'{folder_path}\\{file}')
-        for key in df.keys():
-            if 'time' in key:
-                continue
-            if 'BMS' in key:
-                pack_d[key] = []
-            else:
-                dep_d[key] = []
-        if pack_d == {}:
-            continue
-        for key in pack_d:
-            pack_d[key] = df[key]
-        if dep_d != {}:
-            for key in dep_d:
-                dep_d[key] = df[key]
-        if pack_d != {}:
-            BMS_list.append(BMS(df['timestamps'], pack_d, dep_d))
-            df.plot(kind='line', x='timestamps')
-            plt.show() #AVG, 
+    BMS_list.append(BMS(pd.read_csv(f'{folder_path}\\{file_path}')))
+for bms in BMS_list:
+    print(bms.data.keys())
+    for key in bms.data:
+        print(len(bms.data[key]))
+    plt.plot(bms.time,bms.temp)
+    plt.ylabel('T[C]')
+    plt.xlabel('t[s]')
+    plt.show()
