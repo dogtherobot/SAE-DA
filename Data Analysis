@@ -1,13 +1,18 @@
+from __future__ import print_function
 import pandas as pd  
 import os
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.integrate import cumtrapz
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+import json
+from scipy.integrate import simpson
 
 EGroups_raw = {}
 folder_path = r'C:\Users\cntur\Downloads\Endurance csv groups'
 files = os.listdir(folder_path)
-
+i = 353
 ratio_d = {'E':['P*t']}
 masses = {'224e':10.88*453.59237,'225e':9.51*453.59237,'3p e':10**4*3,'cell':126}
 R=3.5 * 10**-3 #ohm
@@ -29,31 +34,121 @@ for file_name in files:
 class BMS:
     def __init__(self, df):
         self.df = df
-        self.time = np.array(self.df['timestamps'].to_list())
+        cond_ls = np.array(self.df['timestamps'].to_list()) >= 5413.4487
+        self.time = np.array(self.df['timestamps'].to_list())[cond_ls]-5413.4487
         self.keys = list(self.df.keys())
         self.data = {}
+        self.temp = {}
         for key in self.keys:
             if 'Pack' in key:
                 key_l = key.split('Pack')
                 if key_l[1] in ['Power', 'EnergyOut']:
-                    self.data[key_l[1][0]] =np.array(self.df[key].to_list())
+                    self.data[key_l[1][0]] =np.array(self.df[key].to_list())[cond_ls]
                 else:
                     if key_l[1][6] == 'V':
-                        self.data['V'] = np.array(self.df[key].to_list())
+                        self.data['V'] = np.array(self.df[key].to_list())[cond_ls]
                     else:
-                        self.data['I'] = np.array(self.df[key].to_list())
-        self.data['P_T'] = self.data['I']**2 *R
-        self.data['E_T'] = cumtrapz(self.data['P_T'],self.time,initial=0)
-        self.temp = self.data['E_T']/(masses['cell']*1.4)
+                        self.data['I'] = np.array(self.df[key].to_list())[cond_ls]/2
+        self.data['P_T'] = self.data['I']**2 *R #This is the I^2 * R
+        self.data['E_T'] = cumtrapz(self.data['P_T'],self.time,initial=0) #Integration for the area under the curve power from I^2*R in respect to time
+        self.temp = self.data['E_T']/(masses['cell']*1.4)+25 #This is the Delta T = Energy/(mass_of_cell * c)
+    def update_end(self, p, w=126):
+        self.data['P_T_end'] = (self.data['I']/p)**2 *R
+        self.data['E_T_end'] = cumtrapz(self.data['P_T_end'],self.time,initial=0)
+        self.end_temp = self.data['E_T_end']/(w*1.4)+25
+
+with open(r"C:\Users\cntur\Desktop\Codes\config.json") as config_file:
+    config = json.load(config_file)
+    
+SPREADSHEET_ID = config['spreadsheet_id']
+RANGE_NAME = config['range_name']
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+SERVICE_ACCOUNT_FILE = r'C:\Users\cntur\Desktop\Codes\service-account-file.json'
+
+credentials = service_account.Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+
+# Create a service to interact with the Google Sheets API
+service = build('sheets', 'v4', credentials=credentials)
+
+# Call the Sheets API to get the data
+sheet = service.spreadsheets()
+result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=RANGE_NAME).execute()
+values = result.get('values', [])
+
+# Check if any data was returned
+configs = []
+if not values:
+    print('No data found.')
+else:
+    print('Data retrieved from Google Sheets:')
+    headers = values[2][1:]
+    values = values[3:]
+    pr_values = []
+    for row in values:
+        pr_values.append(row[1:])
+    for row in pr_values:
+        config_dict = {}
+        for header in headers:
+            ind = headers.index(header)
+            if (len(row)-1) >= ind:
+                config_dict[header] = row[ind] 
+            else:
+                config_dict[header] = ''
+        configs.append(config_dict)
+for config in configs:
+    masses[config['Manufacturer']] = config['Weight (g)']
+    
+
             
 BMS_list = []
 file_paths = EGroups_raw[('BMS_PackPower', 'BMS_PackEnergyOut', 'BMS_PackClosedVoltage', 'BMS_PackCurrent')]
+df_lengths = [len(pd.read_csv(f'{folder_path}\\{file_path}')) for file_path in file_paths]
 for file_path in file_paths:
-    BMS_list.append(BMS(pd.read_csv(f'{folder_path}\\{file_path}')))
+    df = pd.read_csv(f'{folder_path}\\{file_path}')
+    df_len = len(df)
+    if df_len == max(df_lengths):
+        BMS_list.append(BMS(df))
+
+file_paths = EGroups_raw[('BMS_CellClosedVoltage', 'BMS_CellOpenVoltage', 'BMS_CellChargeResistance', 'BMS_CellDischargeResistance', 'BMS_CellTemperature')]
+for file_path in file_paths:
+    continue
+    df = pd.read_csv(f'{folder_path}\\{file_path}')
+    print(df)
+    print(file_path)
+    df_time = np.array(df['timestamps'].to_list())
+    if file_path == 'endurance.ChannelGroup_100__CGcomment__TX___TX__common_properties__e_name=_MessageID__ro=_true__833__e__e_name=_MessageDLC__ro=_true__8__e___common_properties___CGcomment_.csv':
+        df_temp = np.array(df['BMS_CellTemperature013'].to_list())
+    else:
+        df_temp = np.array(df['BMS_CellTemperature014'].to_list())
+    plt.plot(df_time,df_temp)
+    plt.title('Cell Raw')
+    plt.show()
+
 for bms in BMS_list:
-    print(bms.data.keys())
-    for key in bms.data:
-        print(len(bms.data[key]))
+    for config in configs:
+        print(config)
+        paral = config['Parallel Cells']
+        we = config['Weight (g)']
+        bms.update_end(int(paral), int(we))
+        if False:
+            plt.plot(bms.time,bms.data['P_T_end'])
+            plt.ylabel('P_end')
+            plt.xlabel('t[s]')
+            plt.title(f'Parallel:{paral},Weight:{we}')
+            plt.show()
+        plt.plot(bms.time,bms.end_temp)
+        plt.ylabel('T_end[C]')
+        plt.xlabel('t[s]')
+        plt.title(f'Parallel:{paral},Weight:{we}')
+        plt.show()
+
+for bms in BMS_list:
+    break
+    plt.plot(bms.time,bms.data['P_T'])
+    plt.ylabel('P')
+    plt.xlabel('t[s]')
+    plt.show()
     plt.plot(bms.time,bms.temp)
     plt.ylabel('T[C]')
     plt.xlabel('t[s]')
