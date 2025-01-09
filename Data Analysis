@@ -14,6 +14,7 @@ folder_path = r'C:\Users\cntur\Downloads\Endurance csv groups'
 files = os.listdir(folder_path)
 i = 353
 ratio_d = {'E':['P*t']}
+units_d = {'T':'[C]','t':'[s]'}
 masses = {'224e':10.88*453.59237,'225e':9.51*453.59237,'3p e':10**4*3,'cell':126}
 R=3.5 * 10**-3 #ohm
 c = 1.4 #J/(g*C)
@@ -38,7 +39,6 @@ class BMS:
         self.time = np.array(self.df['timestamps'].to_list())[cond_ls]-5413.4487
         self.keys = list(self.df.keys())
         self.data = {}
-        self.temp = {}
         for key in self.keys:
             if 'Pack' in key:
                 key_l = key.split('Pack')
@@ -52,10 +52,34 @@ class BMS:
         self.data['P_T'] = self.data['I']**2 *R #This is the I^2 * R
         self.data['E_T'] = cumtrapz(self.data['P_T'],self.time,initial=0) #Integration for the area under the curve power from I^2*R in respect to time
         self.temp = self.data['E_T']/(masses['cell']*1.4)+25 #This is the Delta T = Energy/(mass_of_cell * c)
-    def update_end(self, p, w=126):
+    def update_end(self, volt, p, s, w=126):
         self.data['P_T_end'] = (self.data['I']/p)**2 *R
         self.data['E_T_end'] = cumtrapz(self.data['P_T_end'],self.time,initial=0)
         self.end_temp = self.data['E_T_end']/(w*1.4)+25
+        self.temp_plot(self.end_temp, volt, w, p, s)
+    def temp_plot(self, temp, volt, w, p=1, s=1):
+        plt.plot(self.time,temp)
+        plt.ylabel(f'T[C]')
+        plt.xlabel(f't[s]')
+        plt.title(f'{volt} Pack : (Parallel:{p}):(Series:{s}), Weight:{w}')
+        plt.show()
+class Packs:
+    def __init__(self, bms):
+        self.current = bms.data['I']
+        self.resist = 1.4
+        self.time = bms.time
+        self.power = bms.data['P_T']
+        self.energy = bms.data['E_T']
+        self.cell_mass = masses['cell']
+        self.temp = bms.temp
+        self.cell_v = self.current * self.resist
+        self.pos_configs = []
+    def update_info(self, row):
+        self.nom_v = row['Nom Pack V (V)']
+        self.max_v = row['Max V']
+        self.pack_m = row['Pack Mass (kg)']
+    def optimal_config(self, volt):
+        self.pos_configs.append(volt)
 
 with open(r"C:\Users\cntur\Desktop\Codes\config.json") as config_file:
     config = json.load(config_file)
@@ -108,11 +132,11 @@ for file_path in file_paths:
     df = pd.read_csv(f'{folder_path}\\{file_path}')
     df_len = len(df)
     if df_len == max(df_lengths):
-        BMS_list.append(BMS(df))
+        bms = BMS(df)
 
 file_paths = EGroups_raw[('BMS_CellClosedVoltage', 'BMS_CellOpenVoltage', 'BMS_CellChargeResistance', 'BMS_CellDischargeResistance', 'BMS_CellTemperature')]
 for file_path in file_paths:
-    continue
+    break
     df = pd.read_csv(f'{folder_path}\\{file_path}')
     print(df)
     print(file_path)
@@ -125,24 +149,22 @@ for file_path in file_paths:
     plt.title('Cell Raw')
     plt.show()
 
-for bms in BMS_list:
-    for config in configs:
-        print(config)
-        paral = config['Parallel Cells']
-        we = config['Weight (g)']
-        bms.update_end(int(paral), int(we))
-        if False:
-            plt.plot(bms.time,bms.data['P_T_end'])
-            plt.ylabel('P_end')
-            plt.xlabel('t[s]')
-            plt.title(f'Parallel:{paral},Weight:{we}')
-            plt.show()
-        plt.plot(bms.time,bms.end_temp)
-        plt.ylabel('T_end[C]')
+for config in configs:
+    paral = config['Parallel Cells']
+    seri = config['Series Cells']
+    we = config['Weight (g)']
+    volt = config['Nom Pack V (V)'] + '-' + config['Max V']
+    bms.update_end(str(volt), int(paral), int(seri), int(we))
+    if False:
+        plt.plot(bms.time,bms.data['P_T_end'])
+        plt.ylabel('P_end')
         plt.xlabel('t[s]')
         plt.title(f'Parallel:{paral},Weight:{we}')
         plt.show()
-
+for config in configs:
+    if config['Notes'] == 'current':
+        packs = Packs(bms)
+print(packs.resist)
 for bms in BMS_list:
     break
     plt.plot(bms.time,bms.data['P_T'])
