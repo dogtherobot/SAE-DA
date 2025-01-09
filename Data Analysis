@@ -75,11 +75,18 @@ class Packs:
         self.cell_v = self.current * self.resist
         self.pos_configs = []
     def update_info(self, row):
-        self.nom_v = row['Nom Pack V (V)']
-        self.max_v = row['Max V']
-        self.pack_m = row['Pack Mass (kg)']
-    def optimal_config(self, volt):
-        self.pos_configs.append(volt)
+        self.nom_v = float(row['Nom Pack V (V)'])
+        self.max_v = float(row['Max V'])
+        self.pack_m = float(row['Pack Mass (kg)'])
+        self.series = int(row['Series Cells'])
+        self.parallels = int(row['Parallel Cells'])
+        self.total = int(row['Total Cells'])
+    def optimize_config(self, volt):
+        if volt not in range(self.nom_v,self.max_v):
+            self.n_nom_v = volt -30
+            self.n_max_v = volt +30
+        self.nom_ratio = self.nom_v/self.n_nom_v
+            
 
 with open(r"C:\Users\cntur\Desktop\Codes\config.json") as config_file:
     config = json.load(config_file)
@@ -161,10 +168,12 @@ for config in configs:
         plt.xlabel('t[s]')
         plt.title(f'Parallel:{paral},Weight:{we}')
         plt.show()
+pack = Packs(bms)
 for config in configs:
     if config['Notes'] == 'current':
-        packs = Packs(bms)
-print(packs.resist)
+        pack.update_info(config)
+
+
 for bms in BMS_list:
     break
     plt.plot(bms.time,bms.data['P_T'])
