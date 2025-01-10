@@ -62,19 +62,19 @@ class BMS:
         plt.ylabel(f'T[C]')
         plt.xlabel(f't[s]')
         plt.title(f'{volt} Pack : (Parallel:{p}):(Series:{s}), Weight:{w}')
-        plt.show()
 class Packs:
     def __init__(self, bms):
         self.current = bms.data['I']
-        self.resist = 1.4
+        self.resist = 3.5*10**(-3)
         self.time = bms.time
         self.power = bms.data['P_T']
         self.energy = bms.data['E_T']
+        self.temp = bms.temp -25
         self.cell_mass = masses['cell']
-        self.temp = bms.temp
-        self.cell_v = self.current * self.resist
-        self.pos_configs = []
+        self.cell_v = 3.7
+        self.pos_configs = {}
     def update_info(self, row):
+        self.cell_v = float(row['Nominal Voltage (V)'])
         self.nom_v = float(row['Nom Pack V (V)'])
         self.max_v = float(row['Max V'])
         self.pack_m = float(row['Pack Mass (kg)'])
@@ -82,10 +82,38 @@ class Packs:
         self.parallels = int(row['Parallel Cells'])
         self.total = int(row['Total Cells'])
     def optimize_config(self, volt):
-        if volt not in range(self.nom_v,self.max_v):
-            self.n_nom_v = volt -30
-            self.n_max_v = volt +30
-        self.nom_ratio = self.nom_v/self.n_nom_v
+        if volt not in range(int(round(self.nom_v)),int(round(self.max_v))):
+            self.n_nom_v = volt -50
+            self.n_max_v = volt +50
+            self.nom_ratio = self.nom_v/self.n_nom_v
+            self.max_ratio = self.max_v/self.n_max_v
+            pos_s = []
+            for s in range(int(round(self.series/self.nom_ratio)), int(round(self.series/self.max_ratio))):
+                pos_s.append(s)
+            for p in range(1,4):
+                for s in pos_s:
+                    total = p*s
+                    p_ratio = ((self.parallels/p)*(self.series/s))
+                    current = self.current*p_ratio
+                    power = current**2 *self.resist
+                    energy = cumtrapz(power,self.time,initial=0)
+                    temp = energy//(self.cell_mass*1.4) +25
+                    self.pos_configs[str(p)+'*'+str(s)] = {
+                        'Total':total,
+                        'Mass':self.cell_mass*total/1000,
+                        'Nominal Pack Voltage':self.cell_v*s,
+                        'Current':self.current,
+                        'Temperature':temp}
+            print(self.pos_configs)
+            self.plot()
+    def plot(self):
+        for p_s in self.pos_configs:
+            config_data = self.pos_configs[p_s]
+            plt.plot(self.time,config_data['Temperature'])
+            plt.ylabel('T[C]')
+            plt.xlabel('t[s]')
+            plt.title(f'{volt} Pack : {p_s}, Weight[kg]:{config_data["Mass"]}')
+            
             
 
 with open(r"C:\Users\cntur\Desktop\Codes\config.json") as config_file:
@@ -140,7 +168,7 @@ for file_path in file_paths:
     df_len = len(df)
     if df_len == max(df_lengths):
         bms = BMS(df)
-
+print(bms.data['I'])
 file_paths = EGroups_raw[('BMS_CellClosedVoltage', 'BMS_CellOpenVoltage', 'BMS_CellChargeResistance', 'BMS_CellDischargeResistance', 'BMS_CellTemperature')]
 for file_path in file_paths:
     break
@@ -172,7 +200,7 @@ pack = Packs(bms)
 for config in configs:
     if config['Notes'] == 'current':
         pack.update_info(config)
-
+pack.optimize_config(600)
 
 for bms in BMS_list:
     break
