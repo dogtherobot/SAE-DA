@@ -56,7 +56,7 @@ class BMS:
         self.data['P_T_end'] = (self.data['I']/p)**2 *R
         self.data['E_T_end'] = cumtrapz(self.data['P_T_end'],self.time,initial=0)
         self.end_temp = self.data['E_T_end']/(w*1.4)+25
-        self.temp_plot(self.end_temp, volt, w, p, s)
+        #self.temp_plot(self.end_temp, volt, w, p, s)
     def temp_plot(self, temp, volt, w, p=1, s=1):
         plt.plot(self.time,temp)
         plt.ylabel(f'T[C]')
@@ -91,34 +91,36 @@ class Packs:
             for s in range(int(round(self.series/self.nom_ratio)), int(round(self.series/self.max_ratio))):
                 pos_s.append(s)
             for p in range(1,4):
+                p_dict = {}
                 for s in pos_s:
                     total = p*s
                     p_ratio = ((self.parallels/p)*(self.series/s))
-                    current = self.current*p_ratio
+                    current = abs(self.current*p_ratio)
                     power = current**2 *self.resist
                     energy = cumtrapz(power,self.time,initial=0)
-                    temp = energy//(self.cell_mass*1.4) +25
-                    self.pos_configs[str(p)+'*'+str(s)] = {
+                    temp = energy/(self.cell_mass*1.4) +25
+                    p_dict[str(s)+'S*'+str(p)+'P'] = {
                         'Total':total,
                         'Mass':self.cell_mass*total/1000,
                         'Nominal Pack Voltage':self.cell_v*s,
                         'Current':self.current,
                         'Temperature':temp}
+                self.pos_configs[str(p)+'P'] = p_dict
             print(self.pos_configs)
             self.plot()
     def plot(self):
-        for p_s in self.pos_configs:
-            config_data = self.pos_configs[p_s]
-            plt.plot(self.time,config_data['Temperature'])
+        for p in self.pos_configs:
+            for lay, config_data in self.pos_configs[p].items():
+                plt.plot(self.time,config_data['Temperature'],label=lay)
             plt.ylabel('T[C]')
             plt.xlabel('t[s]')
-            plt.title(f'{volt} Pack : {p_s}, Weight[kg]:{config_data["Mass"]}')
-            
-            
+            plt.title(f'Parallels:{p}')
+            plt.legend()
+            plt.grid(True)
+            plt.show()
 
 with open(r"C:\Users\cntur\Desktop\Codes\config.json") as config_file:
     config = json.load(config_file)
-    
 SPREADSHEET_ID = config['spreadsheet_id']
 RANGE_NAME = config['range_name']
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
@@ -157,9 +159,7 @@ else:
         configs.append(config_dict)
 for config in configs:
     masses[config['Manufacturer']] = config['Weight (g)']
-    
 
-            
 BMS_list = []
 file_paths = EGroups_raw[('BMS_PackPower', 'BMS_PackEnergyOut', 'BMS_PackClosedVoltage', 'BMS_PackCurrent')]
 df_lengths = [len(pd.read_csv(f'{folder_path}\\{file_path}')) for file_path in file_paths]
