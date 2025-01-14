@@ -18,6 +18,13 @@ units_d = {'T':'[C]','t':'[s]'}
 masses = {'224e':10.88*453.59237,'225e':9.51*453.59237,'3p e':10**4*3,'cell':126}
 R=3.5 * 10**-3 #ohm
 c = 1.4 #J/(g*C)
+point_weight_dict = {
+    'Mass': 3,
+    'Total Diff':2,
+    'Capacity':2,
+    'Temp Diff':5,
+    'Nominal Pack Voltage':1
+}#higher for unwanted lower for wanted
 for file_name in files:
     df = pd.read_csv(f'{folder_path}\\{file_name}')
     keys = list(df.columns)[1:]
@@ -81,7 +88,10 @@ class Packs:
         self.series = int(row['Series Cells'])
         self.parallels = int(row['Parallel Cells'])
         self.total = int(row['Total Cells'])
+        self.cell_capacity = float(row['Capacity (Ah)'])
     def optimize_config(self, volt):
+        want_debug = input('Do you want to debug the configurations? (y/n): ')
+        want_plot = input('Do you want to plot the temperature graph? (y/n): ')
         if volt not in range(int(round(self.nom_v)),int(round(self.max_v))):
             self.n_nom_v = volt -50
             self.n_max_v = volt +50
@@ -99,15 +109,23 @@ class Packs:
                     power = current**2 *self.resist
                     energy = cumtrapz(power,self.time,initial=0)
                     temp = energy/(self.cell_mass*1.4) +25
+                    capacity = total*self.cell_capacity*self.cell_v
+                    total_diff = total-self.total if total-self.total > 0 else 0
                     p_dict[str(s)+'S*'+str(p)+'P'] = {
                         'Total':total,
+                        'Total Diff':total_diff,
                         'Mass':self.cell_mass*total/1000,
                         'Nominal Pack Voltage':self.cell_v*s,
                         'Current':self.current,
+                        'Temp Diff':temp[-1]-temp[0],
+                        'Capacity':capacity,
                         'Temperature':temp}
                 self.pos_configs[str(p)+'P'] = p_dict
-            print(self.pos_configs)
-            self.plot()
+            if want_debug == 'y':
+                print(self.pos_configs)
+            if want_plot == 'y':
+                self.plot()
+            self.score()
     def plot(self):
         for p in self.pos_configs:
             for lay, config_data in self.pos_configs[p].items():
@@ -118,6 +136,15 @@ class Packs:
             plt.legend()
             plt.grid(True)
             plt.show()
+    def score(self):
+        self.scored_configs = {}
+        for p in self.pos_configs:
+            for config_data in self.pos_configs[p].values():
+                config_data['Score'] = 0
+                for key in point_weight_dict:
+                    config_data['Score'] += point_weight_dict[key]*config_data[key]
+            self.scored_configs[p] = sorted(self.pos_configs[p].values(),key=lambda x: x['Score'])
+        print(self.scored_configs)
 
 with open(r"C:\Users\cntur\Desktop\Codes\config.json") as config_file:
     config = json.load(config_file)
