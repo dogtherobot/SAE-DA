@@ -19,12 +19,12 @@ masses = {'224e':10.88*453.59237,'225e':9.51*453.59237,'3p e':10**4*3,'cell':126
 R=3.5 * 10**-3 #ohm
 c = 1.4 #J/(g*C)
 point_weight_dict = {
-    'Mass': 3,
-    'Total Diff':2,
-    'Capacity':2,
+    'Mass': 5,
+    'Total Diff':3,
+    'Capacity':1,
     'Temp Diff':5,
-    'Nominal Pack Voltage':1
-}#higher for unwanted lower for wanted
+    'Nominal Pack Voltage':4
+}
 for file_name in files:
     df = pd.read_csv(f'{folder_path}\\{file_name}')
     keys = list(df.columns)[1:]
@@ -60,10 +60,10 @@ class BMS:
         self.data['E_T'] = cumtrapz(self.data['P_T'],self.time,initial=0) #Integration for the area under the curve power from I^2*R in respect to time
         self.temp = self.data['E_T']/(masses['cell']*1.4)+25 #This is the Delta T = Energy/(mass_of_cell * c)
     def update_end(self, volt, p, s, w=126):
-        self.data['P_T_end'] = (self.data['I']/p)**2 *R
+        self.data['P_T_end'] = (self.data['I']*p)**2 *R*s/p
         self.data['E_T_end'] = cumtrapz(self.data['P_T_end'],self.time,initial=0)
         self.end_temp = self.data['E_T_end']/(w*1.4)+25
-        #self.temp_plot(self.end_temp, volt, w, p, s)
+        self.temp_plot(self.end_temp, volt, w, p, s)
     def temp_plot(self, temp, volt, w, p=1, s=1):
         plt.plot(self.time,temp)
         plt.ylabel(f'T[C]')
@@ -104,22 +104,26 @@ class Packs:
                 p_dict = {}
                 for s in pos_s:
                     total = p*s
-                    p_ratio = ((self.parallels/p)*(self.series/s))
-                    current = abs(self.current*p_ratio)
-                    power = current**2 *self.resist
+                    curr_ratio = p
+                    r_ratio = (s/p)
+                    current = abs(self.current*curr_ratio)
+                    i_resistance = self.resist*r_ratio
+                    power = current**2 * i_resistance
                     energy = cumtrapz(power,self.time,initial=0)
                     temp = energy/(self.cell_mass*1.4) +25
                     capacity = total*self.cell_capacity*self.cell_v
                     total_diff = total-self.total if total-self.total > 0 else 0
                     p_dict[str(s)+'S*'+str(p)+'P'] = {
+                        'Layout':str(s)+'S*'+str(p)+'P',
                         'Total':total,
                         'Total Diff':total_diff,
                         'Mass':self.cell_mass*total/1000,
                         'Nominal Pack Voltage':self.cell_v*s,
-                        'Current':self.current,
+                        'Current':current,
                         'Temp Diff':temp[-1]-temp[0],
                         'Capacity':capacity,
-                        'Temperature':temp}
+                        'Temperature':temp
+                        } 
                 self.pos_configs[str(p)+'P'] = p_dict
             if want_debug == 'y':
                 print(self.pos_configs)
@@ -136,15 +140,30 @@ class Packs:
             plt.legend()
             plt.grid(True)
             plt.show()
-    def score(self):
-        self.scored_configs = {}
+    def score(self, point_weight_dict=point_weight_dict):
+        self.scored_configs = []
+        max_dict = {}
+        for key in point_weight_dict:
+            max_dict[key] = []
+            for lay in self.pos_configs.values():
+                for config_data in lay.values():
+                    max_dict[key].append(config_data[key])
+            if key in ['Capacity','Nominal Pack Voltage']:
+                max_dict[key] = min(max_dict[key])
+            else:
+                max_dict[key] = max(max_dict[key])
         for p in self.pos_configs:
             for config_data in self.pos_configs[p].values():
                 config_data['Score'] = 0
                 for key in point_weight_dict:
-                    config_data['Score'] += point_weight_dict[key]*config_data[key]
-            self.scored_configs[p] = sorted(self.pos_configs[p].values(),key=lambda x: x['Score'])
-        print(self.scored_configs)
+                    config_data['Score'] += point_weight_dict[key]*abs(max_dict[key]-config_data[key])/max(max_dict[key],config_data[key])*3
+            self.scored_configs.extend(self.pos_configs[p].values())
+        self.scored_configs = sorted(self.scored_configs, key=lambda x: x['Score'],reverse=True)
+    def list_scores(self,top_n='all'):
+        if top_n != 'all':
+            return(self.scored_configs[:top_n])
+        else:
+            return(self.scored_configs)
 
 with open(r"C:\Users\cntur\Desktop\Codes\config.json") as config_file:
     config = json.load(config_file)
@@ -195,7 +214,6 @@ for file_path in file_paths:
     df_len = len(df)
     if df_len == max(df_lengths):
         bms = BMS(df)
-print(bms.data['I'])
 file_paths = EGroups_raw[('BMS_CellClosedVoltage', 'BMS_CellOpenVoltage', 'BMS_CellChargeResistance', 'BMS_CellDischargeResistance', 'BMS_CellTemperature')]
 for file_path in file_paths:
     break
@@ -228,14 +246,5 @@ for config in configs:
     if config['Notes'] == 'current':
         pack.update_info(config)
 pack.optimize_config(600)
-
-for bms in BMS_list:
-    break
-    plt.plot(bms.time,bms.data['P_T'])
-    plt.ylabel('P')
-    plt.xlabel('t[s]')
-    plt.show()
-    plt.plot(bms.time,bms.temp)
-    plt.ylabel('T[C]')
-    plt.xlabel('t[s]')
-    plt.show()
+print(pack.list_scores(2))
+print(pack.scored_configs)
