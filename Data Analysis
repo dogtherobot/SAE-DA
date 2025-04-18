@@ -8,6 +8,9 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import json
 from scipy.integrate import simpson
+from openpyxl import load_workbook
+import itertools
+
 
 EGroups_raw = {}
 folder_path = r'C:\Users\cntur\Downloads\Endurance csv groups'
@@ -18,13 +21,25 @@ units_d = {'T':'[C]','t':'[s]'}
 masses = {'224e':10.88*453.59237,'225e':9.51*453.59237,'3p e':10**4*3,'cell':126}
 R=3.5 * 10**-3 #ohm
 c = 1.4 #J/(g*C)
-point_weight_dict = {
-    'Mass': 5,
-    'Total Diff':3,
-    'Capacity':1,
-    'Temp Diff':5,
-    'Nominal Pack Voltage':4
+point_weight_dict1 = {
+    'Mass Ratio': 5,
+    'Capacity Ratio':3,
+    #'Temp Diff Ratio': 3,
+    'Nominal Pack Voltage Ratio':5,
+    'Volume Ratio':5,
+    'Max C Rate Ratio':4
 }
+keys = list(point_weight_dict1.keys())
+points_range = range(6)
+combinations = list(itertools.product(points_range, repeat=len(keys)))
+
+# Create dictionaries with the combinations and append them to a list
+dict_list = []
+for combo in combinations:
+    new_dict = {keys[i]: combo[i] for i in range(len(keys))}
+    dict_list.append(new_dict)
+print(dict_list[-1], dict_list[0])
+
 for file_name in files:
     df = pd.read_csv(f'{folder_path}\\{file_name}')
     keys = list(df.columns)[1:]
@@ -70,100 +85,229 @@ class BMS:
         plt.xlabel(f't[s]')
         plt.title(f'{volt} Pack : (Parallel:{p}):(Series:{s}), Weight:{w}')
 class Packs:
-    def __init__(self, bms):
-        self.current = bms.data['I']
-        self.resist = 3.5*10**(-3)
+    def __init__(self, bms, row):
+        self.current = abs(bms.data['I'])
         self.time = bms.time
-        self.power = bms.data['P_T']
-        self.energy = bms.data['E_T']
-        self.temp = bms.temp -25
-        self.cell_mass = masses['cell']
-        self.cell_v = 3.7
-        self.pos_configs = {}
-    def update_info(self, row):
         self.cell_v = float(row['Nominal Voltage (V)'])
         self.nom_v = float(row['Nom Pack V (V)'])
-        self.max_v = float(row['Max V'])
+        self.max_v = float(row['Max V (V)'])
         self.pack_m = float(row['Pack Mass (kg)'])
+        self.cell_m = float(row['Weight (g)'])
         self.series = int(row['Series Cells'])
         self.parallels = int(row['Parallel Cells'])
         self.total = int(row['Total Cells'])
         self.cell_capacity = float(row['Capacity (Ah)'])
-    def optimize_config(self, volt):
-        want_debug = input('Do you want to debug the configurations? (y/n): ')
-        want_plot = input('Do you want to plot the temperature graph? (y/n): ')
-        if volt not in range(int(round(self.nom_v)),int(round(self.max_v))):
+        self.resist = float(row['Impedance (mOhm)']) * 10**-3
+        self.volume = float(row['Volume (L)'])
+        self.model = str(row['Model'])
+        self.manufacturer = str(row['Manufacturer'])
+        self.link = str(row['Link'])
+        self.note = str(row['Notes'])
+        self.max_cell_c_rate = int(row['Peak Discharge (<= 5sec)'])
+        self.nom_cell_c_rate = int(row['Max Cont. Discharge Rate (C)'])
+        
+        self.pos_configs = {}
+        self.scored_configs = []
+        
+    def optimize_config(self, capacity_range, cells_max, volt, volt_range, volume, mass, max_c_rate, volt_optimized=False):
+        pos_s = []
+        want_debug = False
+        want_plot = False
+        if self.note == 'current':
+            curr_ratio = self.parallels/(self.series)
+            current = abs(self.current*self.parallels)
+            power = current**2 * self.resist / curr_ratio
+            energy = cumtrapz(power,self.time,initial=0)
+            temp = energy/(self.cell_m*self.total*1.4) +25
+            capacity = self.total*self.cell_capacity*self.cell_v
+            capacity_mean = sum(capacity_range)/len(capacity_range)
+            nominal_pack_voltage = self.cell_v * self.series
+            pack_resistance = self.resist * self.series / self.parallels / 1000
+            AH = (-(3*self.series)+((3*self.series)**2-4*-80000*pack_resistance)**0.5)/(2*pack_resistance)
+            AI = (-nominal_pack_voltage+(nominal_pack_voltage**2-4*-80000*pack_resistance)**0.5)/(2*pack_resistance)
+            AJ=(-(4.2*self.series)+((4.2*self.series)**2-4*-80000*pack_resistance)**0.5)/(2*pack_resistance)
+            ohmic_losses =AJ**2*pack_resistance
+            max_pack_voltage =round((4.2*self.series)-pack_resistance*AJ,2)
+            max_v_c_rate = AH/(self.parallels*self.cell_capacity)
+            nom_v_c_rate = AI/(self.parallels*self.cell_capacity)
+            capacity_ratio = 1- abs(capacity - (capacity_mean))/((capacity_mean-capacity_range[0])*2)
+            
+            self.current_dict = {
+            'Layout':self.note+'|'+str(self.series)+'S*'+str(self.parallels)+'P',
+            'Total':self.total,
+            'Mass':self.pack_m,
+            'Mass Ratio':(mass-self.pack_m)/mass*5,
+            'CCV Max Pack Voltage':self.max_v,
+            'OCV Nominal Pack Voltage':self.nom_v,
+            'Nominal Pack Voltage Ratio':1 - abs(volt - self.nom_v)/volt,
+            'Temp Diff':temp[-1]-temp[0],
+            'Temp Diff Ratio':(10-(temp[-1]-temp[0]))/10,
+            'Capacity':capacity,
+            'Capacity Ratio': capacity_ratio,
+            'Volume':self.volume*self.total,
+            'Volume Ratio': 1 - abs(volume - self.volume*self.total)/volume,
+            'Ohmic Losses':ohmic_losses,
+            'Cell Max C Rate':self.max_cell_c_rate,
+            'Cell Nominal C Rate':self.nom_cell_c_rate,
+            'Max C Rate':max_v_c_rate,
+            'Max C Rate Ratio':(max_v_c_rate - max_c_rate)/max_c_rate,
+            'Nominal C Rate':nom_v_c_rate,
+            'Temperature':temp,
+            'Current':current,
+            }
+        
+        if volt_optimized == True:
             self.n_nom_v = volt -50
             self.n_max_v = volt +50
             self.nom_ratio = self.nom_v/self.n_nom_v
             self.max_ratio = self.max_v/self.n_max_v
-            pos_s = []
             for s in range(int(round(self.series/self.nom_ratio)), int(round(self.series/self.max_ratio))):
                 pos_s.append(s)
-            for p in range(1,4):
-                p_dict = {}
-                for s in pos_s:
-                    total = p*s
-                    curr_ratio = p
-                    r_ratio = (s/p)
-                    current = abs(self.current*curr_ratio)
-                    i_resistance = self.resist*r_ratio
-                    power = current**2 * i_resistance
-                    energy = cumtrapz(power,self.time,initial=0)
-                    temp = energy/(self.cell_mass*1.4) +25
-                    capacity = total*self.cell_capacity*self.cell_v
-                    total_diff = total-self.total if total-self.total > 0 else 0
-                    p_dict[str(s)+'S*'+str(p)+'P'] = {
-                        'Layout':str(s)+'S*'+str(p)+'P',
-                        'Total':total,
-                        'Total Diff':total_diff,
-                        'Mass':self.cell_mass*total/1000,
-                        'Nominal Pack Voltage':self.cell_v*s,
-                        'Current':current,
-                        'Temp Diff':temp[-1]-temp[0],
-                        'Capacity':capacity,
-                        'Temperature':temp
-                        } 
-                self.pos_configs[str(p)+'P'] = p_dict
-            if want_debug == 'y':
-                print(self.pos_configs)
-            if want_plot == 'y':
-                self.plot()
-            self.score()
-    def plot(self):
+        for s in range(int(round(cells_max*0.7)),cells_max+1):
+            pos_s.append(s)
+        for p in range(1,5):
+            p_dict = {}
+            for s in pos_s:
+                total = p*s
+                pack_mass = self.cell_m*total/1000
+                curr_ratio = p/s
+                current = abs(self.current*p) #pack change to cell
+                power = current**2 * self.resist/curr_ratio
+                energy = cumtrapz(power,self.time,initial=0)
+                temp = energy/(self.cell_m*total*1.4) +25
+                capacity = total*self.cell_capacity*self.cell_v
+                capacity_mean = sum(capacity_range)/len(capacity_range)
+                nominal_pack_voltage = self.cell_v * s
+                pack_resistance = self.resist * s / p / 1000
+                AH = (-(3*s)+((3*s)**2-4*-80000*pack_resistance)**0.5)/(2*pack_resistance)
+                AI = (-nominal_pack_voltage+(nominal_pack_voltage**2-4*-80000*pack_resistance)**0.5)/(2*pack_resistance)
+                AJ=(-(4.2*s)+((4.2*s)**2-4*-80000*pack_resistance)**0.5)/(2*pack_resistance)
+                ohmic_losses =AJ**2*pack_resistance
+                max_pack_voltage =round((4.2*s)-pack_resistance*AJ,2)
+                max_v_c_rate = AH/(self.parallels*self.cell_capacity)
+                nom_v_c_rate = AI/(p*self.cell_capacity)
+                
+                if int(round(self.cell_v*s)) not in range(volt_range[0],volt_range[1]+1):
+                    continue
+                if capacity <= capacity_range[1] and capacity >= capacity_range[0]:
+                    capacity_ratio = 1 - abs(capacity - (capacity_mean))/((capacity_mean-capacity_range[0])*2)
+                else:
+                    continue
+                p_dict[str(s)+'S*'+str(p)+'P'] = {
+                'Layout':str(s)+'S*'+str(p)+'P',
+                'Total':total,
+                'Mass':pack_mass,
+                'Mass Ratio':(mass-pack_mass)/mass*5,
+                'CCV Max Pack Voltage':max_pack_voltage,
+                'OCV Nominal Pack Voltage':nominal_pack_voltage,
+                'Nominal Pack Voltage Ratio':1 - abs(volt - self.cell_v*s)/volt,
+                'Temp Diff':temp[-1]-temp[0],
+                'Temp Diff Ratio':(15-(temp[-1]-temp[0]))/15,
+                'Capacity':capacity,
+                'Capacity Ratio': capacity_ratio,
+                'Volume':self.volume*total,
+                'Volume Ratio': 1 - abs(volume - self.volume*total)/volume,
+                'Ohmic Losses':ohmic_losses,
+                'Cell Max C Rate':self.max_cell_c_rate,
+                'Cell Nominal C Rate':self.nom_cell_c_rate,
+                'Max C Rate':max_v_c_rate,
+                'Max C Rate Ratio':(max_v_c_rate - max_c_rate)/max_c_rate*3,
+                'Nominal C Rate':nom_v_c_rate,
+                'Temperature':temp,
+                'Current':current,
+                }
+            self.pos_configs[str(p)+'P'] = p_dict
+        if want_debug == True:
+            print(self.pos_configs)
+        if want_plot == True:
+            self.plot()
+        self.score(find=True)
+    def plot(self,layout='all'):
         for p in self.pos_configs:
             for lay, config_data in self.pos_configs[p].items():
-                plt.plot(self.time,config_data['Temperature'],label=lay)
+                if layout != 'all':
+                    plt.plot(self.time,config_data['Temperature'],label=lay)
+                elif layout == lay:
+                    plt.plot(self.time,config_data['Temperature'],label=lay)
             plt.ylabel('T[C]')
             plt.xlabel('t[s]')
             plt.title(f'Parallels:{p}')
             plt.legend()
             plt.grid(True)
             plt.show()
-    def score(self, point_weight_dict=point_weight_dict):
-        self.scored_configs = []
-        max_dict = {}
-        for key in point_weight_dict:
-            max_dict[key] = []
-            for lay in self.pos_configs.values():
-                for config_data in lay.values():
-                    max_dict[key].append(config_data[key])
-            if key in ['Capacity','Nominal Pack Voltage']:
-                max_dict[key] = min(max_dict[key])
-            else:
-                max_dict[key] = max(max_dict[key])
-        for p in self.pos_configs:
-            for config_data in self.pos_configs[p].values():
-                config_data['Score'] = 0
+    def score(self, point_weight_dict=point_weight_dict1,find=False):
+        if find == True:
+            self.scored_point_weight = {}
+            for point_weight_dict_new in dict_list:
+                point_weight_str = ''
+                for key, value in point_weight_dict_new.items():
+                    point_weight_str+= f'{key[0:3]}:{value} '
+                if self.note == 'current':
+                    self.current_dict['Score'] = 0
+                    for key in point_weight_dict_new:
+                        self.current_dict[f'{key} Score'] = round(point_weight_dict_new[key]*self.current_dict[key]/5,2)
+                        self.current_dict['Score'] += point_weight_dict_new[key]*self.current_dict[key]/5
+                for p in self.pos_configs:
+                    for config_data in self.pos_configs[p].values():
+                        config_data['Score'] = 0
+                        for key in point_weight_dict_new:
+                            config_data[f'{key} Score'] = round(point_weight_dict_new[key]*config_data[key]/5,2)
+                            config_data['Score'] += point_weight_dict_new[key]*config_data[key]/5
+                    self.scored_configs.extend(self.pos_configs[p].values())
+                self.scored_point_weight[point_weight_str] = sorted(self.scored_configs, key=lambda x: x['Score'],reverse=True)
+        else:
+            if self.note == 'current':
+                self.current_dict['Score'] = 0
                 for key in point_weight_dict:
-                    config_data['Score'] += point_weight_dict[key]*abs(max_dict[key]-config_data[key])/max(max_dict[key],config_data[key])*3
-            self.scored_configs.extend(self.pos_configs[p].values())
+                    self.current_dict[f'{key} Score'] = round(point_weight_dict[key]*self.current_dict[key]/5,2)
+                    self.current_dict['Score'] += point_weight_dict[key]*self.current_dict[key]/5
+            for p in self.pos_configs:
+                for config_data in self.pos_configs[p].values():
+                    config_data['Score'] = 0
+                    for key in point_weight_dict:
+                        config_data[f'{key} Score'] = round(point_weight_dict[key]*config_data[key]/5,2)
+                        config_data['Score'] += point_weight_dict[key]*config_data[key]/5
+                self.scored_configs.extend(self.pos_configs[p].values())
         self.scored_configs = sorted(self.scored_configs, key=lambda x: x['Score'],reverse=True)
     def list_scores(self,top_n='all'):
         if top_n != 'all':
             return(self.scored_configs[:top_n])
         else:
             return(self.scored_configs)
+    def return_best(self):
+        self.best = {'Manufacturer':self.manufacturer,
+                     'Model':self.model,
+                     'Link':self.link
+                     }
+        try:
+            self.best.update(self.scored_configs[0])
+        except:
+            self.best.update({'Score':0})
+        return(self.best)
+    def return_current(self):
+        if self.note == 'current':
+            self.current_pack = {'Manufacturer':self.manufacturer,
+                            'Model':self.model,
+                            'Link':self.link
+                            }
+            self.current_pack.update(self.current_dict)
+            return(self.current_pack)
+    def return_best_point_weight(self):
+        self.best_pw_list = []
+        for point_weight_str, scored_list in self.scored_point_weight.items():
+            self.best_point_weight = {'Manufacturer':self.manufacturer,
+                         'Model':self.model,
+                         'Link':self.link
+                         }
+            try:
+                self.best_point_weight.update(scored_list[0])
+                self.best_point_weight['Point Weight'] = point_weight_str
+            except:
+                self.best_point_weight.update({'Score':0})
+                self.best_point_weight['Point Weight'] = point_weight_str
+            self.best_pw_list.append(self.best_point_weight)
+        self.best_pw_list = sorted(self.best_pw_list, key=lambda x: x['Score'],reverse=True)
+        return(self.best_pw_list[0])
 
 with open(r"C:\Users\cntur\Desktop\Codes\config.json") as config_file:
     config = json.load(config_file)
@@ -203,11 +347,10 @@ else:
             else:
                 config_dict[header] = ''
         configs.append(config_dict)
-for config in configs:
-    masses[config['Manufacturer']] = config['Weight (g)']
 
 BMS_list = []
 file_paths = EGroups_raw[('BMS_PackPower', 'BMS_PackEnergyOut', 'BMS_PackClosedVoltage', 'BMS_PackCurrent')]
+
 df_lengths = [len(pd.read_csv(f'{folder_path}\\{file_path}')) for file_path in file_paths]
 for file_path in file_paths:
     df = pd.read_csv(f'{folder_path}\\{file_path}')
@@ -229,22 +372,48 @@ for file_path in file_paths:
     plt.title('Cell Raw')
     plt.show()
 
+
+packs = []
+config_models = []
 for config in configs:
-    paral = config['Parallel Cells']
-    seri = config['Series Cells']
-    we = config['Weight (g)']
-    volt = config['Nom Pack V (V)'] + '-' + config['Max V']
-    bms.update_end(str(volt), int(paral), int(seri), int(we))
-    if False:
-        plt.plot(bms.time,bms.data['P_T_end'])
-        plt.ylabel('P_end')
-        plt.xlabel('t[s]')
-        plt.title(f'Parallel:{paral},Weight:{we}')
-        plt.show()
-pack = Packs(bms)
-for config in configs:
-    if config['Notes'] == 'current':
-        pack.update_info(config)
-pack.optimize_config(600)
-print(pack.list_scores(2))
-print(pack.scored_configs)
+    if config['Model'] not in config_models:
+        try:
+            packs.append(Packs(bms, config))
+        except:
+            continue
+        config_models.append(config['Model'])
+
+bests = []
+point_weight_bests = []
+for pack in packs:
+    pack.optimize_config(capacity_range = (5200,6000), cells_max=144, volt = 600, volt_range = (500,600), volume = 12.6, mass = 29.1, max_c_rate = 16.6, volt_optimized=True)
+    bests.append(pack.return_best())
+    point_weight_bests.append(pack.return_best_point_weight())
+    if pack.note == 'current':
+        current_dict = pack.return_current()
+bests = sorted(bests, key=lambda x: x['Score'],reverse=True)
+excel_order = ['Bests']
+excel_order.extend(pack['Model'] for pack in bests)
+bests.append(current_dict)
+#bests = sorted(bests, key=lambda x: x['Score'],reverse=True)
+point_weight_bests = sorted(point_weight_bests, key=lambda x: x['Score'],reverse=True)
+print(excel_order)
+with pd.ExcelWriter(r'C:\Users\cntur\Desktop\Codes\point_output.xlsx') as writer:
+    pd.DataFrame(point_weight_bests).to_excel(writer, sheet_name='Bests',index = False)
+    for pack in packs:
+        pd.DataFrame(pack.best_pw_list).to_excel(writer, sheet_name= pack.model,index = False)
+workbook = load_workbook(r'C:\Users\cntur\Desktop\Codes\point_output.xlsx')
+workbook._sheets = [workbook[sheet] for sheet in excel_order]
+workbook.save(r'C:\Users\cntur\Desktop\Codes\point_output.xlsx')
+print('Done')
+
+with pd.ExcelWriter(r'C:\Users\cntur\Desktop\Codes\output.xlsx') as writer:
+    pd.DataFrame(bests).to_excel(writer, sheet_name='Bests',index = False)
+    for pack in packs:
+        pd.DataFrame(pack.list_scores()).to_excel(writer, sheet_name= pack.model,index = False)
+    print('Output file created')
+    print('Best configuration:\n{}\n\nWith manufacturer {} and link {}'.format(bests[0],bests[0]['Manufacturer'],bests[0]['Link']))
+
+workbook = load_workbook(r'C:\Users\cntur\Desktop\Codes\output.xlsx')
+workbook._sheets = [workbook[sheet] for sheet in excel_order]
+workbook.save(r'C:\Users\cntur\Desktop\Codes\output.xlsx')

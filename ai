@@ -1,0 +1,155 @@
+from __future__ import print_function
+import pandas as pd  
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.integrate import cumtrapz
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+import json
+
+# Constants
+FOLDER_PATH = r'C:\Users\cntur\Downloads\Endurance csv groups'
+SERVICE_ACCOUNT_FILE = r'C:\Users\cntur\Desktop\Codes\service-account-file.json'
+CONFIG_FILE_PATH = r"C:\Users\cntur\Desktop\Codes\config.json"
+R = 3.5 * 10**-3  # ohm
+C = 1.4  # J/(g*C)
+masses = {'224e':10.88*453.59237,'225e':9.51*453.59237,'3p e':10**4*3,'cell':126}
+
+# Load configuration from JSON
+def load_config(file_path):
+    with open(file_path) as config_file:
+        return json.load(config_file)
+
+# Read CSV files and organize data
+def read_csv_files(folder_path):
+    EGroups_raw = {}
+    for file_name in os.listdir(folder_path):
+        df = pd.read_csv(os.path.join(folder_path, file_name))
+        keys = list(df.columns)[1:]
+        m_keys = [key[:-3] if not key.isalpha() and key[-3:].isnumeric() else key for key in keys]
+        m_keys = tuple(m_keys)
+        
+        if m_keys not in EGroups_raw:
+            EGroups_raw[m_keys] = []
+        EGroups_raw[m_keys].append(file_name)
+    
+    return EGroups_raw
+
+# Connect to Google Sheets and retrieve data
+def get_google_sheet_data(spreadsheet_id, range_name):
+    SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+    credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    service = build('sheets', 'v4', credentials=credentials)
+    
+    sheet = service.spreadsheets()
+    result = sheet.values().get(spreadsheetId=spreadsheet_id, range=range_name).execute()
+    return result.get('values', [])
+
+# Process Google Sheets data
+def process_google_sheet_data(values):
+    configs = []
+    if not values:
+        print('No data found.')
+        return configs
+    
+    print('Data retrieved from Google Sheets:')
+    headers = values[2][1:]
+    values = values[3:]
+    
+    for row in values:
+        config_dict = {header: row[ind] if (len(row) - 1) >= ind else '' for ind, header in enumerate(headers)}
+        configs.append(config_dict)
+    
+    return configs
+
+# BMS Class
+class BMS:
+    def __init__(self, df):
+        self.df = df
+        cond_ls = np.array(self.df['timestamps'].to_list()) >= 5413.4487
+        self.time = np.array(self.df['timestamps'].to_list())[cond_ls] - 5413.4487
+        self.data = self.extract_data()
+        self.data['P_T'] = self.data['I']**2 * R
+        print(len(self.data['P_T']), len(self.time))
+        self.data['E_T'] = cumtrapz(self.data['P_T'], self.time, initial=0)
+        self.temp = self.data['E_T'] / (masses['cell'] * C) + 25
+
+    def extract_data(self):
+        data = {}
+        cond_ls = np.array(self.df['timestamps'].to_list()) >= 5413.4487
+        for key in self.df.keys():
+            if 'Pack' in key:
+                key_l = key.split('Pack')
+                if key_l[1] in ['Power', 'EnergyOut']:
+                    data[key_l[1][0]] = np.array(self.df[key].to_list())[cond_ls]
+                elif key_l[1][6] == 'V':
+                    data['V'] = np.array(self.df[key].to_list())[cond_ls]
+                else:
+                    data['I'] = np.array(self.df[key].to_list())[cond_ls] / 2
+        return data
+
+    def update_end(self, volt, p, s, w=126):
+        self.data['P_T_end'] = (self.data['I'] * p)**2 * R * s / p
+        self.data['E_T_end'] = cumtrapz(self.data['P_T_end'], self.time, initial=0)
+        self.end_temp = self.data['E_T_end'] / (w * C) + 25
+        self.temp_plot(self.end_temp, volt, w, p, s)
+
+    def temp_plot(self, temp, volt, w, p=1, s=1):
+        plt.plot(self.time, temp)
+        plt.ylabel('T [C]')
+        plt.xlabel('t [s]')
+        plt.title(f'{volt} Pack : (Parallel: {p}) : (Series: {s}), Weight: {w}')
+        plt.grid()
+        plt.show()
+
+# Packs Class
+class Packs:
+    def __init__(self, bms, point_weight_dict):
+        self.bms = bms
+        self.point_weight_dict = point_weight_dict
+        self.current = bms.data['I']
+        self.resist = R
+        self.time = bms.time
+        self.power = bms.data['P_T']
+        self.energy = bms.data['E_T']
+        self.temp = bms.temp - 25
+        self.pos_configs = {}
+        self.scored_configs = []
+
+    def score(self):
+        max_dict = {key: [] for key in self.point_weight_dict}
+        for key in self.point_weight_dict:
+            for lay in self.pos_configs.values():
+                for config_data in lay.values():
+                    max_dict[key].append(config_data[key])
+            max_dict[key] = min(max_dict[key]) if key == 'Nominal Pack Voltage' else max(max_dict[key])
+
+        for p in self.pos_configs:
+            for config_data in self.pos_configs[p].values():
+                config_data['Score'] = sum(self.point_weight_dict[key] * abs(max_dict[key] - config_data[key]) / max(max_dict[key], config_data[key]) * 3 for key in self.point_weight_dict)
+                self.scored_configs.append(config_data)
+
+        self.scored_configs.sort(key=lambda x: x['Score'], reverse=True)
+
+# Main Execution
+def main():
+    config = load_config(CONFIG_FILE_PATH)
+    EGroups_raw = read_csv_files(FOLDER_PATH)
+    bms_data = pd.read_csv(r'C:\Users\cntur\Downloads\Endurance csv groups\endurance.ChannelGroup_8__CGcomment__TX___TX__common_properties__e_name=_MessageID__ro=_true__65__e__e_name=_MessageDLC__ro=_true__8__e___common_properties___CGcomment_.csv')
+    bms = BMS(bms_data)
+
+    point_weight_dict = {
+        'Mass': 5,
+        'Total Diff': 1,
+        'Capacity Ratio': 5,
+        'Temp Diff': 2,
+        'Nominal Pack Voltage': 3,
+        'Volume Ratio': 5
+    }
+
+    packs = Packs(bms, point_weight_dict)
+    return packs
+
+if __name__ == "__main__":
+    main()
