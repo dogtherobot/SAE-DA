@@ -38,7 +38,6 @@ dict_list = []
 for combo in combinations:
     new_dict = {keys[i]: combo[i] for i in range(len(keys))}
     dict_list.append(new_dict)
-print(dict_list[-1], dict_list[0])
 
 for file_name in files:
     df = pd.read_csv(f'{folder_path}\\{file_name}')
@@ -111,7 +110,7 @@ class Packs:
         
     def optimize_config(self, capacity_range, cells_max, volt, volt_range, volume, mass, max_c_rate, volt_optimized=False):
         pos_s = []
-        want_debug = True
+        want_debug = False
         want_plot = False
         if self.note == 'current':
             curr_ratio = self.parallels/(self.series)
@@ -188,12 +187,12 @@ class Packs:
                 nom_v_c_rate = AI/(p*self.cell_capacity)
                 
                 if int(round(nominal_pack_voltage)) not in range(volt_range[0],volt_range[1]+1):
-                    print('Skipped due to voltage')
                     continue
                 if capacity <= capacity_range[1] and capacity >= capacity_range[0]:
                     capacity_ratio = 1 - abs(capacity - (capacity_mean))/((capacity_mean-capacity_range[0])*2)
                 else:
-                    print('Skipped due to capacity')
+                    continue 
+                if nom_v_c_rate > self.nom_cell_c_rate:
                     continue
                 p_dict[str(s)+'S*'+str(p)+'P'] = {
                 'Layout':str(s)+'S*'+str(p)+'P',
@@ -284,6 +283,8 @@ class Packs:
         try:
             self.best.update(self.scored_configs[0])
         except:
+            self.best.update({'Score':0})
+        if self.best['Score'] < 0:
             self.best.update({'Score':0})
         return(self.best)
     def return_current(self):
